@@ -90,17 +90,25 @@ def verify_typeform_signature(request_data, signature):
 
 def extract_form_id_from_webhook(webhook_data):
     """Extract form ID from webhook data"""
-    form_id = webhook_data.get('form_id')
-    if form_id:
-        return form_id
-    
-    # Try to extract from form definition if available
-    form_definition = webhook_data.get('form_definition', {})
+    # First try to get from form_response.form_id
+    form_response = webhook_data.get('form_response', {})
+    if form_response:
+        form_id = form_response.get('form_id')
+        if form_id:
+            return form_id
+
+    # Fallback: try to extract from form definition if available
+    form_definition = form_response.get('definition', {})
     if form_definition:
         form_id = form_definition.get('id')
         if form_id:
             return form_id
-    
+
+    # Last resort: check if form_id is directly in webhook_data
+    form_id = webhook_data.get('form_id')
+    if form_id:
+        return form_id
+
     return None
 
 def load_prompt_template(template_path):
@@ -133,9 +141,16 @@ def extract_typeform_data(webhook_data):
         elif answer.get('type') == 'choice':
             answers[field_title] = answer.get('choice', {}).get('label')
         elif answer.get('type') == 'choices':
-            answers[field_title] = [c.get('label') for c in answer.get('choices', [])]
+            choices_data = answer.get('choices', {})
+            if isinstance(choices_data, dict) and 'labels' in choices_data:
+                answers[field_title] = choices_data['labels']
+            else:
+                # Fallback for old format
+                answers[field_title] = [c.get('label') for c in answer.get('choices', []) if isinstance(c, dict)]
         elif answer.get('type') == 'number':
             answers[field_title] = answer.get('number')
+        elif answer.get('type') == 'boolean':
+            answers[field_title] = answer.get('boolean')
         # Add more types as needed
 
     # Extract metadata
@@ -150,17 +165,17 @@ def extract_typeform_data(webhook_data):
 
 def generate_email_content(answers, form_config, webhook_data):
     """Generate personalized email content using Google Gemini with form-specific template"""
-    
+
     # Load the prompt template for this form
     prompt_template = load_prompt_template(form_config['prompt_template'])
     if not prompt_template:
         # Fallback to a generic template
         prompt_template = """
         You are a helpful assistant. Please analyze the following form responses and create a personalized HTML email response.
-        
+
         Form responses:
         {webhook_data}
-        
+
         Please create a professional and helpful response in HTML format.
         """
 
@@ -292,7 +307,7 @@ def typeform_webhook():
             )
 
         return jsonify({
-            'status': 'success', 
+            'status': 'success',
             'submission_id': submission_id,
             'form_id': form_id,
             'form_name': form_config['name']
